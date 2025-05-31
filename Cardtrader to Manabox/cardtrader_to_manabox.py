@@ -64,6 +64,27 @@ def process_csv(input_file, output_file='cardtrader_to_manabox_output.csv'):
         # Replace 'DCM' with 'DMC' for Dominaria United Commander
         df['set code'] = df['set code'].replace({'DCM': 'DMC'})
         
+        # Replace 'PLST2' with 'PLST' for MB2
+        df['set code'] = df['set code'].replace({'PLIST2': 'PLST'})
+        
+        # Replace 'SLD-20WTW' with 'SLD' for 20 Ways to Win Deck
+        df['set code'] = df['set code'].replace({'SLD-20WTW': 'SLD'})
+        
+        # change set code from CSNCC to NCC for New Capenna Commander
+        df['set code'] = df['set code'].replace({'CSNCC': 'NCC'})
+        
+        # change set from EOC to NEC for Neon Dynasty Commander
+        df['set code'] = df['set code'].replace({'EOC': 'NEC'})
+        
+        #change set from VOWCOM to VOC for Crimson Vow Commander
+        df['set code'] = df['set code'].replace({'VOWCOM': 'VOC'})
+        
+        #change set from MB1 to PLST for Mystery Booster 1
+        df['set code'] = df['set code'].replace({'MB1': 'PLST'})
+        
+        # change PRE to 2XM for Double Masters 2022 Prerelease Wrath of God
+        df['set code'] = df['set code'].replace({'PRE': '2XM'})
+        
         # BAB buy a box cant be fixed.
         # Phyrexian Dragon Engine // Mishra, Lost to Phyrexia
 
