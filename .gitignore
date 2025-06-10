@@ -159,3 +159,6 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 notes
+Proxy Helper/Decks/*
+Proxy Helper/Output/*
+Proxy Helper/Collection/*
