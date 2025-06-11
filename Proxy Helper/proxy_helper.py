@@ -214,11 +214,35 @@ def optimize_deck_loading(decks_folder, progress_enabled=True):
 # === Ensure output directory exists ===
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-# === Load and preprocess collection (FIX: group only by card name) ===
-collection_df = pd.read_csv(COLLECTION_PATH)
-collection_df.columns = [col.strip().lower().replace(" ", "_") for col in collection_df.columns]
-collection = collection_df[~collection_df["binder_type"].str.lower().eq("list")].copy()
-collection["name"] = collection["name"].str.strip()
+# === Load and preprocess collection with enhanced validation ===
+try:
+    collection_df = pd.read_csv(COLLECTION_PATH)
+    if collection_df.empty:
+        progress_print(f"Warning: Collection file {COLLECTION_PATH} is empty")
+        exit(1)
+    
+    progress_print(f"Loaded collection with {len(collection_df)} entries")
+    
+    # Normalize column names first
+    collection_df.columns = [col.strip().lower().replace(" ", "_") for col in collection_df.columns]
+    
+    # Validate required columns after normalization
+    required_columns = ['name', 'quantity', 'binder_type']
+    missing_columns = [col for col in required_columns if col not in collection_df.columns]
+    if missing_columns:
+        progress_print(f"Error: Missing required columns in collection: {missing_columns}")
+        progress_print(f"Available columns: {list(collection_df.columns)}")
+        exit(1)
+        
+    collection = collection_df[~collection_df["binder_type"].str.lower().eq("list")].copy()
+    collection["name"] = collection["name"].str.strip()
+    
+except FileNotFoundError:
+    progress_print(f"Error: Collection file not found: {COLLECTION_PATH}")
+    exit(1)
+except Exception as e:
+    progress_print(f"Error loading collection file: {e}")
+    exit(1)
 
 # === Load existing proxies data using optimized function ===
 existing_proxies, existing_quality_proxies, existing_temp_proxies = load_existing_proxies_optimized(EXISTING_PROXIES_PATH)
@@ -529,11 +553,7 @@ deck_assignments, binder_reserved, shopping_list_unowned, shopping_list_missing,
     reserved_binder_cards
 )
 
-# === Save outputs ===
-pd.DataFrame(deck_assignments).to_csv(ASSIGNMENT_OUTPUT, index=False)
-pd.DataFrame([{"card": card} for card in binder_reserved.keys()]).to_csv(BINDER_OUTPUT, index=False)
-
-# Process shopping lists with existing proxies consideration
+# === Process shopping lists with existing proxies consideration ===
 shopping_list_unowned_adjusted = []
 for row in shopping_list_unowned:
     card = row["card"]
@@ -551,10 +571,6 @@ for row in shopping_list_unowned:
             "needed": adjusted_needed,
             "existing": existing_count
         })
-
-# Save adjusted missing unowned shopping list under the same filename for backward compatibility
-pd.DataFrame(shopping_list_unowned_adjusted).to_csv(
-    os.path.join(OUTPUT_FOLDER, "shopping_list_unowned.csv"), index=False)
 
 # Process missing owned shopping list
 missing_owned_rows = []
@@ -584,59 +600,81 @@ for assignment in deck_assignments:
 total_missing_owned = sum(assignment["missingOwned"] for assignment in deck_assignments)
 total_missing_owned_needed = sum(row["needed"] for row in missing_owned_rows)
 
-# Save adjusted missing owned proxy shopping list (keep backward compatible name)
-pd.DataFrame(missing_owned_rows).to_csv(
-    os.path.join(OUTPUT_FOLDER, "shopping_list_ownedproxy.csv"), index=False)
+# === Save outputs using batch processing ===
+output_data = {
+    "deck_assignments": deck_assignments,
+    "binder_reserved": binder_reserved,
+    "shopping_list_unowned_adjusted": shopping_list_unowned_adjusted,
+    "missing_owned_rows": missing_owned_rows,
+    "deck_status_rows": [],  # Will be populated below
+    "missing_owned_cardnames": set(row["card"] for row in missing_owned_rows),
+    "missing_unowned_cardnames": set(row["card"] for row in shopping_list_unowned_adjusted)
+}
 
-# Save adjusted owned proxy shopping list
-pd.DataFrame(missing_owned_rows).to_csv(
-    os.path.join(OUTPUT_FOLDER, "shopping_list_ownedproxy.csv"), index=False)
+# Generate deck status rows for CSV output
+for deck, stats in deck_status.items():
+    # Complete decks (all real cards)
+    if (not stats["has_missingOwned"] and not stats["has_missingUnowned"] and 
+        not stats["has_qualityProxy"] and not stats["has_tempProxy"]):
+        output_data["deck_status_rows"].append({"deck": deck, "status": "complete"})
+    # Decks with quality proxies only
+    elif (not stats["has_missingOwned"] and not stats["has_missingUnowned"] and 
+          stats["has_qualityProxy"] and not stats["has_tempProxy"]):
+        output_data["deck_status_rows"].append({"deck": deck, "status": "quality_proxy_only"})
+    # Decks with temp proxies only
+    elif (not stats["has_missingOwned"] and not stats["has_missingUnowned"] and 
+          not stats["has_qualityProxy"] and stats["has_tempProxy"]):
+        output_data["deck_status_rows"].append({"deck": deck, "status": "temp_proxy_only"})
+    # Decks with missing owned only (backward compatible name)
+    elif stats["has_missingOwned"] and not stats["has_missingUnowned"]:
+        output_data["deck_status_rows"].append({"deck": deck, "status": "owned_proxy_only"})
+    # Decks with missing unowned (backward compatible name)
+    elif stats["has_missingUnowned"]:
+        output_data["deck_status_rows"].append({"deck": deck, "status": "unowned_proxy"})
+    else:
+        # Mixed proxy types not covered by above cases
+        output_data["deck_status_rows"].append({"deck": deck, "status": "mixed"})
 
-# === Write TXT versions of reserved and shopping lists (card names only, one per line) ===
-# Reserved binder cards
-with open(os.path.join(OUTPUT_FOLDER, "binder_reserved.txt"), "w", encoding="utf-8") as f:
-    for card in binder_reserved.keys():
-        f.write(f"{card}\n")
-# Missing owned shopping list (card names only)
-missing_owned_cardnames = set(row["card"] for row in missing_owned_rows)
-with open(os.path.join(OUTPUT_FOLDER, "shopping_list_ownedproxy.txt"), "w", encoding="utf-8") as f:
-    for card in sorted(missing_owned_cardnames):
-        f.write(f"{card}\n")
-# Missing unowned shopping list (card names only)
-missing_unowned_cardnames = set(row["card"] for row in shopping_list_unowned_adjusted)
-with open(os.path.join(OUTPUT_FOLDER, "shopping_list_unowned.txt"), "w", encoding="utf-8") as f:
-    for card in sorted(missing_unowned_cardnames):
-        f.write(f"{card}\n")
+# Use batch file writing for improved performance
+batch_write_files(output_data, ENABLE_PROGRESS)
 
-# === Deck completion stats (improved logic) ===
-deck_status = defaultdict(lambda: {
-    "real": 0, 
-    "qualityProxy": 0, 
-    "tempProxy": 0, 
-    "missingOwned": 0, 
-    "missingUnowned": 0, 
-    "needed": 0, 
-    "has_qualityProxy": False, 
-    "has_tempProxy": False,
-    "has_missingOwned": False, 
-    "has_missingUnowned": False
-})
+# === Deck completion stats (optimized memory usage) ===
+# Pre-calculate deck totals for efficiency
+deck_totals = {}
 for assignment in deck_assignments:
     deck = assignment["deck"]
-    deck_status[deck]["real"] += assignment["real"]
-    deck_status[deck]["qualityProxy"] += assignment["qualityProxy"]
-    deck_status[deck]["tempProxy"] += assignment["tempProxy"]
-    deck_status[deck]["missingOwned"] += assignment["missingOwned"]
-    deck_status[deck]["missingUnowned"] += assignment["missingUnowned"]
-    deck_status[deck]["needed"] += assignment["needed"]
-    if assignment["qualityProxy"] > 0:
-        deck_status[deck]["has_qualityProxy"] = True
-    if assignment["tempProxy"] > 0:
-        deck_status[deck]["has_tempProxy"] = True
-    if assignment["missingOwned"] > 0:
-        deck_status[deck]["has_missingOwned"] = True
-    if assignment["missingUnowned"] > 0:
-        deck_status[deck]["has_missingUnowned"] = True
+    if deck not in deck_totals:
+        deck_totals[deck] = {
+            "real": 0, 
+            "qualityProxy": 0, 
+            "tempProxy": 0, 
+            "missingOwned": 0, 
+            "missingUnowned": 0, 
+            "needed": 0, 
+            "has_qualityProxy": False, 
+            "has_tempProxy": False,
+            "has_missingOwned": False, 
+            "has_missingUnowned": False
+        }
+    
+    deck_totals[deck]["real"] += assignment["real"]
+    deck_totals[deck]["qualityProxy"] += assignment["qualityProxy"]
+    deck_totals[deck]["tempProxy"] += assignment["tempProxy"]
+    deck_totals[deck]["missingOwned"] += assignment["missingOwned"]
+    deck_totals[deck]["missingUnowned"] += assignment["missingUnowned"]
+    deck_totals[deck]["needed"] += assignment["needed"]
+    
+    # Efficient flag updates (avoid redundant checks)
+    if assignment["qualityProxy"] > 0 and not deck_totals[deck]["has_qualityProxy"]:
+        deck_totals[deck]["has_qualityProxy"] = True
+    if assignment["tempProxy"] > 0 and not deck_totals[deck]["has_tempProxy"]:
+        deck_totals[deck]["has_tempProxy"] = True
+    if assignment["missingOwned"] > 0 and not deck_totals[deck]["has_missingOwned"]:
+        deck_totals[deck]["has_missingOwned"] = True
+    if assignment["missingUnowned"] > 0 and not deck_totals[deck]["has_missingUnowned"]:
+        deck_totals[deck]["has_missingUnowned"] = True
+
+deck_status = deck_totals
 
 complete = 0
 missing_owned_only = 0
@@ -695,7 +733,8 @@ def print_summary_stats(complete, quality_proxy_only, temp_proxy_only, missing_o
                         _total_missing_unowned, _total_proxies, _total_cards, _percentage_real,
                         existing_proxies, existing_quality_proxies, existing_temp_proxies,
                         total_existing_proxies_used, missing_unowned_without_existing,
-                        num_unowned_proxy_cards_adjusted, total_missing_owned):
+                        num_unowned_proxy_cards_adjusted, total_missing_owned,
+                        reserved_binder_cards, binder_reserved):
     """Print summary statistics with configurable output"""
     progress_print("\n=== Deck Optimizer Summary ===")
     progress_print("Files written to /Output:")
@@ -721,6 +760,21 @@ def print_summary_stats(complete, quality_proxy_only, temp_proxy_only, missing_o
     progress_print(f"  Total cards assigned (real + proxies):   {_total_cards}")
     progress_print(f"  Percentage of real cards:                {_percentage_real:.2f}%")
 
+    progress_print("\nReserved Binder Stats:")
+    if reserved_binder_cards:
+        total_reserved_collection = sum(reserved_binder_cards.values())
+        progress_print(f"  Cards in Reserved Binder collection:     {len(reserved_binder_cards)} unique cards ({total_reserved_collection} total)")
+    else:
+        progress_print(f"  Cards in Reserved Binder collection:     0 (no Reserved Binder found)")
+    
+    if binder_reserved:
+        total_reserved_optimization = len(binder_reserved)
+        progress_print(f"  Cards reserved by optimization:          {total_reserved_optimization} unique cards")
+        progress_print(f"  Total cards in reserve:                  {len(reserved_binder_cards) + total_reserved_optimization} unique cards")
+    else:
+        progress_print(f"  Cards reserved by optimization:          0")
+        progress_print(f"  Total cards in reserve:                  {len(reserved_binder_cards)}")
+
     progress_print("\nShopping List Totals:")
     progress_print(f"  Total existing proxies available:             {sum(existing_proxies.values()) if existing_proxies else 0}")
     progress_print(f"  - Quality proxies:                          {sum(existing_quality_proxies.values()) if existing_quality_proxies else 0}")
@@ -735,32 +789,6 @@ print_summary_stats(complete, quality_proxy_only, temp_proxy_only, missing_owned
                         _total_missing_unowned, _total_proxies, _total_cards, _percentage_real,
                         existing_proxies, existing_quality_proxies, existing_temp_proxies,
                         total_existing_proxies_used, missing_unowned_without_existing,
-                        num_unowned_proxy_cards_adjusted, total_missing_owned)
-
-# === Output deck status CSV ===
-deck_status_rows = []
-for deck, stats in deck_status.items():
-    # Complete decks (all real cards)
-    if (not stats["has_missingOwned"] and not stats["has_missingUnowned"] and 
-        not stats["has_qualityProxy"] and not stats["has_tempProxy"]):
-        deck_status_rows.append({"deck": deck, "status": "complete"})
-    # Decks with quality proxies only
-    elif (not stats["has_missingOwned"] and not stats["has_missingUnowned"] and 
-          stats["has_qualityProxy"] and not stats["has_tempProxy"]):
-        deck_status_rows.append({"deck": deck, "status": "quality_proxy_only"})
-    # Decks with temp proxies only
-    elif (not stats["has_missingOwned"] and not stats["has_missingUnowned"] and 
-          not stats["has_qualityProxy"] and stats["has_tempProxy"]):
-        deck_status_rows.append({"deck": deck, "status": "temp_proxy_only"})
-    # Decks with missing owned only (backward compatible name)
-    elif stats["has_missingOwned"] and not stats["has_missingUnowned"]:
-        deck_status_rows.append({"deck": deck, "status": "owned_proxy_only"})
-    # Decks with missing unowned (backward compatible name)
-    elif stats["has_missingUnowned"]:
-        deck_status_rows.append({"deck": deck, "status": "unowned_proxy"})
-    else:
-        # Mixed proxy types not covered by above cases
-        deck_status_rows.append({"deck": deck, "status": "mixed"})
-
-pd.DataFrame(deck_status_rows).to_csv(os.path.join(OUTPUT_FOLDER, "deck_status.csv"), index=False)
+                        num_unowned_proxy_cards_adjusted, total_missing_owned,
+                        reserved_binder_cards, binder_reserved)
 
