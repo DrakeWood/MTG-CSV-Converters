@@ -24,16 +24,20 @@ class TestProxyHelper(unittest.TestCase):
             self.assertFalse(s["has_tempProxy"])
 
     def test_binder_reserve(self):
-        # Not enough for all decks, should reserve 1 in binder, both decks get missing owned proxies
+        # Not enough for all decks, new greedy algorithm should complete one deck with real cards
+        # and assign missing owned proxies to the other deck
         decklists = {"Deck1": [("A", 1)], "Deck2": [("A", 1)]}
         collection = {"A": 1}
         assignments, binder_reserved, _, _, _ = assign_cards(decklists, collection)
-        self.assertIn("A", binder_reserved)
+        
+        # With greedy algorithm, one deck gets real cards, other gets missing owned proxies
         real_counts = [a["real"] for a in assignments if a["card"] == "A"]
-        self.assertTrue(all(r == 0 for r in real_counts))
         missing_owned_counts = [a["missingOwned"] for a in assignments if a["card"] == "A"]
-        self.assertTrue(all(op == 1 for op in missing_owned_counts))
         missing_unowned_counts = [a["missingUnowned"] for a in assignments if a["card"] == "A"]
+        
+        # Should have exactly one real card assignment and one missing owned assignment
+        self.assertEqual(sum(real_counts), 1)
+        self.assertEqual(sum(missing_owned_counts), 1)
         self.assertTrue(all(up == 0 for up in missing_unowned_counts))
 
 if __name__ == "__main__":

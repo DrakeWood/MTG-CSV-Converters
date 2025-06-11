@@ -539,13 +539,11 @@ for deck, stats in deck_status.items():
     elif stats["has_missingUnowned"]:
         missing_unowned += 1
 
-num_unowned_proxy_cards = sum(row["needed"] for row in shopping_list_unowned)
+# Calculate shopping list totals BEFORE adjustment (what we would need without existing proxies)
+num_unowned_proxy_cards_before_adjustment = sum(row["needed"] for row in shopping_list_unowned)
 num_unowned_proxy_cards_adjusted = sum(row["needed"] for row in shopping_list_unowned_adjusted)
 total_owned_proxies = sum(assignment["missingOwned"] for assignment in deck_assignments)
 total_owned_proxies_needed = sum(row["needed"] for row in missing_owned_rows)
-total_existing_proxies_used = sum(min(existing_proxies.get(row["card"], 0), row["needed"]) for row in shopping_list_unowned) + \
-                             sum(min(existing_proxies.get(assignment["card"], 0), assignment["missingOwned"]) 
-                                 for assignment in deck_assignments if assignment["missingOwned"] > 0)
 
 # === Output summary statistics ===
 # Compute overall totals for real cards and proxies used in decks
@@ -557,6 +555,15 @@ _total_missing_unowned = sum(a["missingUnowned"] for a in deck_assignments)
 _total_proxies = _total_quality_proxy + _total_temp_proxy + _total_missing_owned + _total_missing_unowned
 _total_cards = _total_real + _total_proxies
 _percentage_real = (_total_real / _total_cards * 100) if _total_cards > 0 else 0
+
+# Calculate existing proxies used more accurately
+# Existing proxies used = quality proxies + temp proxies assigned (these replace what would have been missing cards)
+total_existing_proxies_used = _total_quality_proxy + _total_temp_proxy
+
+# Calculate what the missing cards would have been WITHOUT existing proxies
+# This represents the true "before adjustment" number
+missing_unowned_without_existing = _total_missing_unowned + total_existing_proxies_used
+missing_owned_without_existing = total_owned_proxies + _total_quality_proxy + _total_temp_proxy
 
 print("\n=== Deck Optimizer Summary ===")
 print("Files written to /Output:")
@@ -587,7 +594,7 @@ print(f"  Total existing proxies available:             {sum(existing_proxies.va
 print(f"  - Quality proxies:                          {sum(existing_quality_proxies.values()) if existing_quality_proxies else 0}")
 print(f"  - Temporary proxies:                        {sum(existing_temp_proxies.values()) if existing_temp_proxies else 0}")
 print(f"  Existing proxies used:                       {total_existing_proxies_used}")
-print(f"  Total missing unowned before adjustment:     {num_unowned_proxy_cards}")
+print(f"  Total missing unowned before adjustment:     {missing_unowned_without_existing}")
 print(f"  Total missing unowned after adjustment:      {num_unowned_proxy_cards_adjusted}")
 print(f"  Total missing owned needed:                  {total_missing_owned}")
 
