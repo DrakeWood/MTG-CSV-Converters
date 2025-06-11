@@ -26,19 +26,22 @@ collection["name"] = collection["name"].str.strip()
 existing_proxies = {}  # card_name -> total count of existing proxies
 existing_quality_proxies = {}  # card_name -> count of quality proxies
 existing_temp_proxies = {}  # card_name -> count of temporary proxies
+
 if os.path.exists(EXISTING_PROXIES_PATH):
-    try:
-        # Add explicit encoding and error handling
-        with open(EXISTING_PROXIES_PATH, 'r', encoding='utf-8') as f:
-            # Manually parse the CSV
+    try:        # Add explicit encoding and error handling
+        print("DEBUG: Opening file")
+        with open(EXISTING_PROXIES_PATH, 'r', encoding='utf-8') as f:            # Manually parse the CSV
+            print("DEBUG: Reading lines")
             lines = [line.strip() for line in f.readlines() if line.strip()]
+            print(f"DEBUG: Read {len(lines)} lines")
             if len(lines) > 0:
                 headers = [h.strip() for h in lines[0].split(',')]
-                
-                # Check for correct headers
+                print(f"DEBUG: Headers: {headers}")                # Check for correct headers
                 if "card" in headers and "quantity" in headers:
+                    print("DEBUG: Found card and quantity headers")
                     # Old format - treat all as temp proxies for backward compatibility
                     if set(headers) == {"card", "quantity"}:
+                        print("DEBUG: Using old format")
                         for line in lines[1:]:
                             parts = line.split(',')
                             if len(parts) >= 2:
@@ -50,37 +53,40 @@ if os.path.exists(EXISTING_PROXIES_PATH):
                                 except ValueError:
                                     continue
                         print(f"Loaded {len(existing_proxies)} cards from existing proxies list (old format)")
-                    
-                # New format (card, quality, temp, quantity)
-                elif all(col in headers for col in ['card', 'quality', 'temp', 'quantity']):
-                    card_idx = headers.index("card")
-                    quality_idx = headers.index("quality")
-                    temp_idx = headers.index("temp")
-                    quantity_idx = headers.index("quantity")
-                    
-                    for line in lines[1:]:
-                        parts = line.split(',')
-                        if len(parts) >= max(card_idx, quality_idx, temp_idx, quantity_idx) + 1:
-                            card = parts[card_idx].strip()
-                            try:
-                                quality = int(parts[quality_idx].strip())
-                                temp = int(parts[temp_idx].strip())
-                                qty = int(parts[quantity_idx].strip())
-                                
-                                # Add to total proxies
-                                existing_proxies[card] = existing_proxies.get(card, 0) + qty
-                                
-                                # Add to quality or temp proxies
-                                if quality == 1:
-                                    existing_quality_proxies[card] = existing_quality_proxies.get(card, 0) + qty
-                                elif temp == 1:
-                                    existing_temp_proxies[card] = existing_temp_proxies.get(card, 0) + qty
-                            except ValueError:
-                                continue
-                    
-                    print(f"Loaded {len(existing_proxies)} cards from existing proxies list")
-                    print(f"  - Quality proxies: {len(existing_quality_proxies)}")
-                    print(f"  - Temporary proxies: {len(existing_temp_proxies)}")
+                      # New format (card, quality, temp, quantity)
+                    elif all(col in headers for col in ['card', 'quality', 'temp', 'quantity']):
+                        print("DEBUG: Using new format")
+                        card_idx = headers.index("card")
+                        quality_idx = headers.index("quality")
+                        temp_idx = headers.index("temp")
+                        quantity_idx = headers.index("quantity")
+                        
+                        for line in lines[1:]:
+                            parts = line.split(',')
+                            if len(parts) >= max(card_idx, quality_idx, temp_idx, quantity_idx) + 1:
+                                card = parts[card_idx].strip()
+                                try:
+                                    quality = int(parts[quality_idx].strip())
+                                    temp = int(parts[temp_idx].strip())
+                                    qty = int(parts[quantity_idx].strip())
+                                    
+                                    # Add to total proxies
+                                    existing_proxies[card] = existing_proxies.get(card, 0) + qty
+                                    
+                                    # Add to quality or temp proxies
+                                    if quality == 1:
+                                        existing_quality_proxies[card] = existing_quality_proxies.get(card, 0) + qty
+                                    elif temp == 1:
+                                        existing_temp_proxies[card] = existing_temp_proxies.get(card, 0) + qty
+                                except ValueError:
+                                    continue
+                        
+                        print(f"Loaded {len(existing_proxies)} cards from existing proxies list")
+                        print(f"  - Quality proxies: {len(existing_quality_proxies)}")
+                        print(f"  - Temporary proxies: {len(existing_temp_proxies)}")
+                        print(f"  - Total proxy count: {sum(existing_proxies.values())}")
+                        print(f"  - Quality proxy count: {sum(existing_quality_proxies.values())}")
+                        print(f"  - Temp proxy count: {sum(existing_temp_proxies.values())}")
                 else:
                     print(f"Warning: Existing proxies file doesn't have required columns (card, quality, temp, quantity)")
     except Exception as e:
@@ -127,7 +133,7 @@ def assign_cards(decklists, collection, existing_proxies=None, existing_quality_
               existing_temp_proxies=None, reserved_binder=None):
     """
     Assigns cards from collection to decks, minimizing proxies and maximizing complete decks.
-    Allows unlimited missingOwned proxies as long as a card is owned (even if reserved).
+    Prioritizes decks that can be completed with all real cards first.
     
     Args:
         decklists: dict of deck_name -> list of (card, qty)
@@ -147,53 +153,123 @@ def assign_cards(decklists, collection, existing_proxies=None, existing_quality_
     reserved_binder = reserved_binder or {}
     from collections import defaultdict, Counter
 
-    # Build a list of (deck, card, qty) for all needs
-    deck_card_needs = []
-    for deck, cards in decklists.items():
-        for card, qty in cards:
-            deck_card_needs.append((deck, card, qty))
-
-    # Aggregate total needed per card
-    card_total_needed = Counter()
-    for _, card, qty in deck_card_needs:
-        card_total_needed[card] += qty
-
-    # Build binder pool
+    # Build binder pool - make a copy since we'll modify it
     binder_pool = defaultdict(int)
     for card, qty in collection.items():
-        binder_pool[card] = qty
+        binder_pool[card] = qty    # Step 1: Use greedy algorithm to find optimal set of complete decks
+    print("Finding optimal set of complete decks...")
+    
+    # Create a working copy of available cards
+    available_cards = binder_pool.copy()
+    
+    # Account for reserved cards
+    for card, reserved_qty in reserved_binder.items():
+        if card in available_cards:
+            available_cards[card] = max(0, available_cards[card] - reserved_qty)
+    
+    # Try to find the best combination of decks that can be completed
+    def can_complete_deck(deck_cards, available):
+        """Check if a deck can be completed with available cards"""
+        temp_available = available.copy()
+        for card, qty in deck_cards:
+            if temp_available.get(card, 0) < qty:
+                return False
+            temp_available[card] -= qty
+        return True
+    
+    def complete_deck(deck_cards, available):
+        """Complete a deck by removing cards from available pool"""
+        for card, qty in deck_cards:
+            available[card] -= qty
+        return available
+    
+    # Sort decks by size (smaller first) to maximize number of complete decks
+    deck_sizes = [(deck_name, sum(qty for _, qty in cards), cards) 
+                  for deck_name, cards in decklists.items()]
+    deck_sizes.sort(key=lambda x: x[1])
+    
+    completed_decks = []
+    working_available = available_cards.copy()
+    
+    for deck_name, size, deck_cards in deck_sizes:
+        if can_complete_deck(deck_cards, working_available):
+            completed_decks.append(deck_name)
+            working_available = complete_deck(deck_cards, working_available)
+            print(f"  ✓ Can complete: {deck_name} ({size} cards)")
+        else:
+            print(f"  ✗ Cannot complete: {deck_name} ({size} cards)")
+    
+    print(f"\nOptimal solution: {len(completed_decks)} complete decks")
 
-    # Calculate adjusted binder reserve considering the reserved_binder
-    binder_reserved = {}
-    for card, total_needed in card_total_needed.items():
-        owned = binder_pool.get(card, 0)
-        # Only reserve a card if it's not already in the reserved binder
-        # and there's not enough for all decks
-        if 0 < owned < total_needed and card not in reserved_binder:
-            binder_reserved[card] = 1
-
+    # Step 2: Build assignment tracking
     assignments = []
     slu = []  # shopping list missing unowned
     slm = []  # shopping list missing owned
     deck_status = {deck: {"has_missingOwned": False, "has_missingUnowned": False,
                          "has_qualityProxy": False, "has_tempProxy": False} 
                   for deck in decklists}
+    
+    # Track what's been assigned
+    allocated_cards = defaultdict(int)  # card -> quantity allocated
+    
+    # Step 3: Assign real cards to complete decks
+    print("\nAssigning real cards to complete decks...")
+    
+    for deck_name in completed_decks:
+        for card, qty in decklists[deck_name]:
+            # Assign real cards
+            assignments.append({
+                "deck": deck_name,
+                "card": card,
+                "needed": qty,
+                "real": qty,
+                "qualityProxy": 0,
+                "tempProxy": 0,
+                "missingOwned": 0,
+                "missingUnowned": 0
+            })
+            allocated_cards[card] += qty
+        print(f"  ✓ Assigned all real cards to: {deck_name}")    # Step 4: Calculate binder reserve for remaining cards
+    print("\nCalculating binder reserves...")
+    
+    # Build a list of (deck, card, qty) for remaining needs
+    remaining_deck_needs = []
+    
+    for deck, cards in decklists.items():
+        if deck not in completed_decks:
+            for card, qty in cards:
+                remaining_deck_needs.append((deck, card, qty))
 
-    # For each card, assign to decks
+    # Aggregate remaining total needed per card
+    remaining_card_total = Counter()
+    for _, card, qty in remaining_deck_needs:
+        remaining_card_total[card] += qty
+
+    # Calculate binder reserve for remaining cards
+    binder_reserved = {}
+    for card, total_needed in remaining_card_total.items():
+        available = binder_pool.get(card, 0) - allocated_cards[card]
+        # Only reserve a card if it's not already in the reserved binder
+        # and there's not enough for all remaining decks
+        if 0 < available < total_needed and card not in reserved_binder:
+            binder_reserved[card] = 1
+
+    # Step 5: Assign cards to remaining decks using optimized algorithm
+    remaining_decks = set(deck for deck, _, _ in remaining_deck_needs)
+    print(f"\nAssigning cards to {len(remaining_decks)} remaining decks...")
+    
+    # Group remaining needs by card
     card_deck_assignments = defaultdict(list)
-    for deck, card, qty in deck_card_needs:
+    for deck, card, qty in remaining_deck_needs:
         card_deck_assignments[card].append((deck, qty))
 
     for card, needs in card_deck_assignments.items():
         total_needed = sum(qty for _, qty in needs)
-        owned = binder_pool.get(card, 0)
-        # If card is in the reserved binder, don't count it as needing to be reserved
-        # it's already reserved
-        reserve = 0
-        if 0 < owned < total_needed and card not in reserved_binder:
-            reserve = 1
-            binder_reserved[card] = 1
-        assignable = max(owned - reserve, 0)
+        available = binder_pool.get(card, 0) - allocated_cards[card]
+        
+        # Account for binder reserve
+        reserve = binder_reserved.get(card, 0)
+        assignable = max(available - reserve, 0)
         
         # Sort needs by ascending qty to maximize completed decks
         sorted_needs = sorted(needs, key=lambda x: x[1])
@@ -212,8 +288,7 @@ def assign_cards(decklists, collection, existing_proxies=None, existing_quality_
                 real_assignments.append((deckname, qty, qty, 0, 0, 0, 0))
                 real_left -= qty
             else:
-                break
-                
+                break                
         # Second pass: assign proxies to remaining decks
         proxy_start = len(real_assignments)
         for i in range(proxy_start, len(sorted_needs)):
@@ -230,7 +305,8 @@ def assign_cards(decklists, collection, existing_proxies=None, existing_quality_
             
             # If card is owned (but not enough real copies), allow for missingOwned proxies
             # Otherwise it's missingUnowned
-            if owned > 0:
+            original_owned = binder_pool.get(card, 0)
+            if original_owned > 0:
                 # First try to use quality proxies
                 quality_available = min(existing_quality_count, remaining)
                 quality_proxy = quality_available
